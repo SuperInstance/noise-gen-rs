@@ -1,26 +1,34 @@
 //! # noise-gen-rs
 //!
-//! A pure-Rust library for procedural noise generation, providing:
-//! - **Perlin noise** (2D and 3D)
-//! - **Simplex noise** (2D and 3D)
-//! - **Worley/Voronoi noise** (2D and 3D)
-//! - **Fractal Brownian Motion** (fBm) layering on any noise source
+//! A pure-Rust noise generation library providing Perlin noise, Simplex noise (2D/3D),
+//! Worley/Voronoi noise, and fractal Brownian motion (fBm).
 //!
-//! All generators are deterministic when seeded, produce outputs in `[-1, 1]`,
-//! and require no external dependencies.
+//! # Example
+//! ```
+//! use noise_gen_rs::perlin::PerlinNoise;
+//! use noise_gen_rs::simplex::SimplexNoise;
+//! use noise_gen_rs::worley::WorleyNoise;
+//! use noise_gen_rs::fbm::FractalBrownianMotion;
+//!
+//! let perlin = PerlinNoise::new(42);
+//! let val = perlin.noise2d(0.5, 0.5);
+//! assert!(val >= -1.0 && val <= 1.0);
+//!
+//! let simplex = SimplexNoise::new(42);
+//! let val = simplex.noise2d(0.5, 0.5);
+//! assert!(val >= -1.0 && val <= 1.0);
+//!
+//! let worley = WorleyNoise::new(42);
+//! let val = worley.noise2d(0.5, 0.5);
+//! assert!(val >= 0.0);
+//!
+//! let fbm = FractalBrownianMotion::new(42);
+//! let val = fbm.fbmd2(0.5, 0.5, 4, 2.0, 0.5);
+//! assert!(val >= -1.0 && val <= 1.0);
+//! ```
 
-/// Perlin gradient noise in 2D and 3D.
 pub mod perlin;
-/// Simplex noise in 2D and 3D.
 pub mod simplex;
-/// Worley (Voronoi) cellular noise in 2D and 3D.
 pub mod worley;
-/// Fractal Brownian Motion — layers any base noise for natural-looking detail.
 pub mod fbm;
-/// Shared utilities: gradient tables, interpolation, and hashing helpers.
 pub mod util;
-
-pub use perlin::PerlinNoise;
-pub use simplex::SimplexNoise;
-pub use worley::WorleyNoise;
-pub use fbm::FractalBrownianMotion;

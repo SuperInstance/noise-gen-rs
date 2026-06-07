@@ -1,135 +1,164 @@
-//! Shared utilities: permutation tables, gradient look-ups, interpolation, and hashing.
+//! Utility functions for noise generation: gradient vectors, interpolation, and hashing.
 
-/// A permutation table built from a seed, used to hash grid coordinates.
-#[derive(Clone, Debug)]
-pub struct PermutationTable {
-    perm: [u8; 512],
-}
-
-impl PermutationTable {
-    /// Build a new permutation table from a 64-bit seed.
-    ///
-    /// Uses a simple xorshift PRNG to shuffle a base permutation of `0..256`.
-    pub fn new(seed: u64) -> Self {
-        let mut p: [u8; 256] = core::array::from_fn(|i| i as u8);
-        let mut s = seed;
-        for i in (1..256).rev() {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            let j = (s >> 33) as usize % (i + 1);
-            p.swap(i, j);
-        }
-        let mut perm = [0u8; 512];
-        perm[..256].copy_from_slice(&p);
-        perm[256..].copy_from_slice(&p);
-        Self { perm }
-    }
-
-    /// Hash a single integer coordinate.
-    #[inline]
-    pub fn hash1(&self, x: i32) -> u8 {
-        self.perm[(x & 0xFF) as usize]
-    }
-
-    /// Hash two integer coordinates.
-    #[inline]
-    pub fn hash2(&self, x: i32, y: i32) -> u8 {
-        self.perm[(i32::from(self.hash1(x)) + (y & 0xFF)) as usize & 0x1FF]
-    }
-
-    /// Hash three integer coordinates.
-    #[inline]
-    pub fn hash3(&self, x: i32, y: i32, z: i32) -> u8 {
-        self.perm[(i32::from(self.hash2(x, y)) + (z & 0xFF)) as usize & 0x1FF]
-    }
-}
-
-/// 2D gradient vectors for Perlin/Simplex noise (12 directions).
-pub const GRADIENTS_2D: [[f64; 2]; 12] = [
-    [1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0],
-    [1.0, 1.0], [-1.0, 1.0], [1.0, -1.0], [-1.0, -1.0],
-    [1.0, 0.5], [-1.0, 0.5], [0.5, 1.0], [0.5, -1.0],
-];
-
-/// 3D gradient vectors for Perlin noise (12 edge midpoints of a cube).
-pub const GRADIENTS_3D: [[f64; 3]; 12] = [
-    [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0], [1.0, -1.0, 0.0], [-1.0, -1.0, 0.0],
-    [1.0, 0.0, 1.0], [-1.0, 0.0, 1.0], [1.0, 0.0, -1.0], [-1.0, 0.0, -1.0],
-    [0.0, 1.0, 1.0], [0.0, -1.0, 1.0], [0.0, 1.0, -1.0], [0.0, -1.0, -1.0],
-];
-
-/// Quintic fade curve: `6t^5 - 15t^4 + 10t^3`. Smooth first and second derivatives.
+/// Fade curve: 6t^5 - 15t^4 + 10t^3 (Quintic Hermite interpolation).
+/// Produces a smooth S-curve that has zero first and second derivatives at t=0 and t=1.
 #[inline]
 pub fn fade(t: f64) -> f64 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
-/// Linear interpolation between `a` and `b` with parameter `t`.
+/// Linear interpolation between `a` and `b` by factor `t`.
 #[inline]
-pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
+pub fn lerp(t: f64, a: f64, b: f64) -> f64 {
     a + t * (b - a)
 }
 
-/// Dot product of a 2D gradient and an offset vector.
+/// 2D gradient vectors used for Perlin noise.
+/// These are the 8 unit directions on a circle.
+pub const GRADIENTS_2D: [(f64, f64); 8] = [
+    (1.0, 0.0),
+    (-1.0, 0.0),
+    (0.0, 1.0),
+    (0.0, -1.0),
+    (1.0, 1.0),
+    (-1.0, 1.0),
+    (1.0, -1.0),
+    (-1.0, -1.0),
+];
+
+/// 3D gradient vectors used for Perlin noise.
+pub const GRADIENTS_3D: [(f64, f64, f64); 12] = [
+    (1.0, 1.0, 0.0),
+    (-1.0, 1.0, 0.0),
+    (1.0, -1.0, 0.0),
+    (-1.0, -1.0, 0.0),
+    (1.0, 0.0, 1.0),
+    (-1.0, 0.0, 1.0),
+    (1.0, 0.0, -1.0),
+    (-1.0, 0.0, -1.0),
+    (0.0, 1.0, 1.0),
+    (0.0, -1.0, 1.0),
+    (0.0, 1.0, -1.0),
+    (0.0, -1.0, -1.0),
+];
+
+/// Simple hash function for seeding. Maps an integer to a pseudo-random index.
+/// Uses a multiplication-based hash for good distribution.
 #[inline]
-pub fn dot2(g: &[f64; 2], x: f64, y: f64) -> f64 {
-    g[0] * x + g[1] * y
+pub fn hash(seed: u64, x: i64, y: i64) -> usize {
+    let h = seed
+        .wrapping_mul(374761393)
+        .wrapping_add(x as u64)
+        .wrapping_mul(668265263)
+        .wrapping_add(y as u64)
+        .wrapping_mul(1274126177);
+    (h >> 16) as usize
 }
 
-/// Dot product of a 3D gradient and an offset vector.
+/// 3D hash function for seeding.
 #[inline]
-pub fn dot3(g: &[f64; 3], x: f64, y: f64, z: f64) -> f64 {
-    g[0] * x + g[1] * y + g[2] * z
+pub fn hash3(seed: u64, x: i64, y: i64, z: i64) -> usize {
+    let h = seed
+        .wrapping_mul(374761393)
+        .wrapping_add(x as u64)
+        .wrapping_mul(668265263)
+        .wrapping_add(y as u64)
+        .wrapping_mul(1274126177)
+        .wrapping_add(z as u64)
+        .wrapping_mul(1911520717);
+    (h >> 16) as usize
 }
 
-/// Floor a float to `i32`.
+/// Simple seeded pseudo-random number generator (xoshiro256-like, simplified).
+/// Returns a value in [0, 1).
 #[inline]
-pub fn floori(x: f64) -> i32 {
-    x.floor() as i32
+pub fn seeded_random(seed: u64, index: usize) -> f64 {
+    let mut h = seed.wrapping_add(index as u64);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xff51afd7ed558ccd);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xc4ceb9fe1a85ec53);
+    h ^= h >> 33;
+    (h as f64) / (u64::MAX as f64)
 }
+
+/// Skewing factor for 2D Simplex noise: (sqrt(3) - 1) / 2 ≈ 0.3660254037844386.
+pub const SIMPLEX_SKEW_2D: f64 = 0.3660254037844386;
+
+/// Unskewing factor for 2D Simplex noise: (3 - sqrt(3)) / 6 ≈ 0.21132486540518713.
+pub const SIMPLEX_UNSKEW_2D: f64 = 0.21132486540518713;
+
+/// Skewing factor for 3D Simplex noise: (sqrt(4) - 1) / 3 = 1/3.
+pub const SIMPLEX_SKEW_3D: f64 = 1.0 / 3.0;
+
+/// Unskewing factor for 3D Simplex noise: 1/6.
+pub const SIMPLEX_UNSKEW_3D: f64 = 1.0 / 6.0;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_permutation_deterministic() {
-        let t1 = PermutationTable::new(42);
-        let t2 = PermutationTable::new(42);
-        assert_eq!(t1.perm, t2.perm);
+    fn test_fade_boundaries() {
+        // At t=0 and t=1, fade should be 0 and 1 respectively
+        assert!((fade(0.0) - 0.0).abs() < 1e-10);
+        assert!((fade(1.0) - 1.0).abs() < 1e-10);
     }
 
     #[test]
-    fn test_permutation_different_seeds() {
-        let t1 = PermutationTable::new(42);
-        let t2 = PermutationTable::new(99);
-        assert_ne!(t1.perm, t2.perm);
-    }
-
-    #[test]
-    fn test_fade_bounds() {
-        assert!((fade(0.0)).abs() < 1e-12);
-        assert!((fade(1.0) - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_fade_derivative_zero_at_bounds() {
-        // derivative of fade is 30t^4 - 60t^3 + 30t^2
+    fn test_fade_derivatives_zero_at_boundaries() {
+        // Derivative of fade: 30t^4 - 60t^3 + 30t^2
         let d = |t: f64| 30.0 * t * t * t * t - 60.0 * t * t * t + 30.0 * t * t;
-        assert!(d(0.0).abs() < 1e-12);
-        assert!(d(1.0).abs() < 1e-12);
+        assert!(d(0.0).abs() < 1e-10);
+        assert!(d(1.0).abs() < 1e-10);
     }
 
     #[test]
-    fn test_lerp_endpoints() {
-        assert!((lerp(2.0, 5.0, 0.0) - 2.0).abs() < 1e-12);
-        assert!((lerp(2.0, 5.0, 1.0) - 5.0).abs() < 1e-12);
-        assert!((lerp(2.0, 5.0, 0.5) - 3.5).abs() < 1e-12);
+    fn test_fade_midpoint() {
+        // At t=0.5, fade should be 0.5
+        assert!((fade(0.5) - 0.5).abs() < 1e-10);
     }
 
     #[test]
-    fn test_floori() {
-        assert_eq!(floori(1.7), 1);
-        assert_eq!(floori(-0.3), -1);
-        assert_eq!(floori(0.0), 0);
+    fn test_lerp() {
+        assert!((lerp(0.0, 5.0, 10.0) - 5.0).abs() < 1e-10);
+        assert!((lerp(1.0, 5.0, 10.0) - 10.0).abs() < 1e-10);
+        assert!((lerp(0.5, 0.0, 10.0) - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_hash_deterministic() {
+        let h1 = hash(42, 3, 7);
+        let h2 = hash(42, 3, 7);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_hash_different_inputs() {
+        let h1 = hash(42, 0, 0);
+        let h2 = hash(42, 1, 0);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_hash3_deterministic() {
+        let h1 = hash3(42, 1, 2, 3);
+        let h2 = hash3(42, 1, 2, 3);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_seeded_random_range() {
+        for i in 0..100 {
+            let v = seeded_random(42, i);
+            assert!(v >= 0.0 && v < 1.0, "Value {} out of range", v);
+        }
+    }
+
+    #[test]
+    fn test_seeded_random_deterministic() {
+        let v1 = seeded_random(123, 456);
+        let v2 = seeded_random(123, 456);
+        assert!((v1 - v2).abs() < 1e-15);
     }
 }

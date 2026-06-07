@@ -1,127 +1,180 @@
-//! Worley (Voronoi) cellular noise in 2D and 3D.
+//! Worley (Voronoi) noise generation in 2D and 3D.
+//!
+//! Worley noise is based on distance to random feature points, producing
+//! cellular/Voronoi-like patterns. Output represents distances, typically [0, ∞).
 
-use crate::util::{PermutationTable, floori};
+use crate::util::{hash, hash3, seeded_random};
 
-/// Distance metric for Worley noise.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum DistanceMetric {
-    /// Euclidean distance (L2 norm).
+/// Distance function type for Worley noise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistanceFunc {
+    /// Euclidean distance: sqrt(dx^2 + dy^2)
     Euclidean,
-    /// Manhattan distance (L1 norm).
+    /// Manhattan distance: |dx| + |dy|
     Manhattan,
-    /// Chebyshev distance (L∞ norm).
+    /// Chebyshev distance: max(|dx|, |dy|)
     Chebyshev,
 }
 
-impl DistanceMetric {
-    fn dist2(&self, dx: f64, dy: f64) -> f64 {
-        match self {
-            DistanceMetric::Euclidean => (dx * dx + dy * dy).sqrt(),
-            DistanceMetric::Manhattan => dx.abs() + dy.abs(),
-            DistanceMetric::Chebyshev => dx.abs().max(dy.abs()),
-        }
-    }
-
-    fn dist3(&self, dx: f64, dy: f64, dz: f64) -> f64 {
-        match self {
-            DistanceMetric::Euclidean => (dx * dx + dy * dy + dz * dz).sqrt(),
-            DistanceMetric::Manhattan => dx.abs() + dy.abs() + dz.abs(),
-            DistanceMetric::Chebyshev => dx.abs().max(dy.abs()).max(dz.abs()),
-        }
-    }
-}
-
-/// Worley (cellular/Voronoi) noise generator.
+/// Worley noise generator with configurable seed and distance function.
+///
+/// # Example
+/// ```
+/// use noise_gen_rs::worley::{WorleyNoise, DistanceFunc};
+/// let noise = WorleyNoise::new(42);
+/// let val = noise.noise2d(0.5, 0.5);
+/// assert!(val >= 0.0);
+/// ```
+#[derive(Debug, Clone)]
 pub struct WorleyNoise {
-    perm: PermutationTable,
-    metric: DistanceMetric,
+    seed: u64,
+    distance_func: DistanceFunc,
+    /// Number of feature points per cell (1-4).
+    points_per_cell: usize,
 }
 
 impl WorleyNoise {
-    /// Create with a seed and default Euclidean distance.
+    /// Create a new Worley noise generator with the given seed.
     pub fn new(seed: u64) -> Self {
         Self {
-            perm: PermutationTable::new(seed),
-            metric: DistanceMetric::Euclidean,
+            seed,
+            distance_func: DistanceFunc::Euclidean,
+            points_per_cell: 1,
         }
     }
 
-    /// Set the distance metric.
-    pub fn with_metric(mut self, metric: DistanceMetric) -> Self {
-        self.metric = metric;
+    /// Set the distance function.
+    pub fn with_distance_func(mut self, func: DistanceFunc) -> Self {
+        self.distance_func = func;
         self
     }
 
-    /// Pseudo-random value in [0, 1) derived from a hash.
-    #[inline]
-    fn rand2(&self, x: i32, y: i32) -> f64 {
-        let h = self.perm.hash2(x, y);
-        h as f64 / 256.0
+    /// Set the number of feature points per cell.
+    pub fn with_points_per_cell(mut self, n: usize) -> Self {
+        self.points_per_cell = n.clamp(1, 4);
+        self
     }
 
-    #[inline]
-    fn rand3(&self, x: i32, y: i32, z: i32) -> f64 {
-        let h = self.perm.hash3(x, y, z);
-        h as f64 / 256.0
-    }
-
-    /// Evaluate 2D Worley noise — returns `(F1, F2)` distances to nearest and second-nearest feature points.
-    pub fn noise2d(&self, x: f64, y: f64) -> (f64, f64) {
-        let xi = floori(x);
-        let yi = floori(y);
-
-        let mut f1 = f64::MAX;
-        let mut f2 = f64::MAX;
-
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                let cx = xi + dx;
-                let cy = yi + dy;
-                let px = cx as f64 + self.rand2(cx, cy);
-                let py = cy as f64 + self.rand2(cx + 317, cy + 101);
-                let dist = self.metric.dist2(x - px, y - py);
-                if dist < f1 {
-                    f2 = f1;
-                    f1 = dist;
-                } else if dist < f2 {
-                    f2 = dist;
-                }
-            }
+    /// Compute distance between two 2D points using the configured distance function.
+    fn dist2d(&self, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
+        let dx = x1 - x2;
+        let dy = y1 - y2;
+        match self.distance_func {
+            DistanceFunc::Euclidean => (dx * dx + dy * dy).sqrt(),
+            DistanceFunc::Manhattan => dx.abs() + dy.abs(),
+            DistanceFunc::Chebyshev => dx.abs().max(dy.abs()),
         }
-
-        (f1, f2)
     }
 
-    /// Evaluate 3D Worley noise — returns `(F1, F2)`.
-    pub fn noise3d(&self, x: f64, y: f64, z: f64) -> (f64, f64) {
-        let xi = floori(x);
-        let yi = floori(y);
-        let zi = floori(z);
+    /// Compute distance between two 3D points using the configured distance function.
+    fn dist3d(&self, x1: f64, y1: f64, z1: f64, x2: f64, y2: f64, z2: f64) -> f64 {
+        let dx = x1 - x2;
+        let dy = y1 - y2;
+        let dz = z1 - z2;
+        match self.distance_func {
+            DistanceFunc::Euclidean => (dx * dx + dy * dy + dz * dz).sqrt(),
+            DistanceFunc::Manhattan => dx.abs() + dy.abs() + dz.abs(),
+            DistanceFunc::Chebyshev => dx.abs().max(dy.abs()).max(dz.abs()),
+        }
+    }
 
-        let mut f1 = f64::MAX;
-        let mut f2 = f64::MAX;
+    /// Generate feature points for a given cell.
+    fn feature_points2d(&self, cx: i64, cy: i64) -> Vec<(f64, f64)> {
+        let base = (cx, cy);
+        let count = self.points_per_cell;
+        let mut points = Vec::with_capacity(count);
+        for k in 0..count {
+            let idx = hash(self.seed, cx, cy).wrapping_add(k);
+            let px = seeded_random(self.seed, idx * 2) + cx as f64;
+            let py = seeded_random(self.seed, idx * 2 + 1) + cy as f64;
+            points.push((px, py));
+        }
+        let _ = base; // used via cx, cy in hash/seeded_random
+        points
+    }
 
+    /// Generate 2D Worley noise (F1 - distance to nearest feature point).
+    ///
+    /// Returns a non-negative distance value.
+    pub fn noise2d(&self, x: f64, y: f64) -> f64 {
+        self.noise2d_f1(x, y)
+    }
+
+    /// F1: Distance to the nearest feature point.
+    pub fn noise2d_f1(&self, x: f64, y: f64) -> f64 {
+        let mut min_dist = f64::MAX;
+        let cx = x.floor() as i64;
+        let cy = y.floor() as i64;
+
+        // Check 3x3 neighborhood
         for dx in -1..=1 {
             for dy in -1..=1 {
-                for dz in -1..=1 {
-                    let cx = xi + dx;
-                    let cy = yi + dy;
-                    let cz = zi + dz;
-                    let px = cx as f64 + self.rand3(cx, cy, cz);
-                    let py = cy as f64 + self.rand3(cx + 317, cy + 101, cz + 57);
-                    let pz = cz as f64 + self.rand3(cx + 79, cy + 211, cz + 173);
-                    let dist = self.metric.dist3(x - px, y - py, z - pz);
-                    if dist < f1 {
-                        f2 = f1;
-                        f1 = dist;
-                    } else if dist < f2 {
-                        f2 = dist;
+                let cell_x = cx + dx;
+                let cell_y = cy + dy;
+                for &(px, py) in &self.feature_points2d(cell_x, cell_y) {
+                    let d = self.dist2d(x, y, px, py);
+                    if d < min_dist {
+                        min_dist = d;
                     }
                 }
             }
         }
+        min_dist
+    }
 
-        (f1, f2)
+    /// F2: Distance to the second nearest feature point.
+    pub fn noise2d_f2(&self, x: f64, y: f64) -> f64 {
+        let mut d1 = f64::MAX;
+        let mut d2 = f64::MAX;
+        let cx = x.floor() as i64;
+        let cy = y.floor() as i64;
+
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                let cell_x = cx + dx;
+                let cell_y = cy + dy;
+                for &(px, py) in &self.feature_points2d(cell_x, cell_y) {
+                    let d = self.dist2d(x, y, px, py);
+                    if d < d1 {
+                        d2 = d1;
+                        d1 = d;
+                    } else if d < d2 {
+                        d2 = d;
+                    }
+                }
+            }
+        }
+        d2
+    }
+
+    /// Generate 3D Worley noise (F1).
+    pub fn noise3d(&self, x: f64, y: f64, z: f64) -> f64 {
+        let mut min_dist = f64::MAX;
+        let cx = x.floor() as i64;
+        let cy = y.floor() as i64;
+        let cz = z.floor() as i64;
+
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let cell_x = cx + dx;
+                    let cell_y = cy + dy;
+                    let cell_z = cz + dz;
+                    let count = self.points_per_cell;
+                    for k in 0..count {
+                        let idx = hash3(self.seed, cell_x, cell_y, cell_z).wrapping_add(k);
+                        let px = seeded_random(self.seed, idx * 3) + cell_x as f64;
+                        let py = seeded_random(self.seed, idx * 3 + 1) + cell_y as f64;
+                        let pz = seeded_random(self.seed, idx * 3 + 2) + cell_z as f64;
+                        let d = self.dist3d(x, y, z, px, py, pz);
+                        if d < min_dist {
+                            min_dist = d;
+                        }
+                    }
+                }
+            }
+        }
+        min_dist
     }
 }
 
@@ -130,72 +183,106 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_worley_2d_deterministic() {
-        let n = WorleyNoise::new(42);
-        let (a, b) = n.noise2d(1.5, 2.5);
-        let (c, d) = n.noise2d(1.5, 2.5);
-        assert!((a - c).abs() < 1e-12);
-        assert!((b - d).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_worley_2d_positive_distances() {
-        let n = WorleyNoise::new(42);
-        for x in 0..10 {
-            for y in 0..10 {
-                let (f1, f2) = n.noise2d(x as f64 * 0.5, y as f64 * 0.5);
-                assert!(f1 >= 0.0, "F1 negative: {f1}");
-                assert!(f2 >= f1, "F2 < F1: {f2} < {f1}");
-            }
+    fn test_worley2d_non_negative() {
+        let noise = WorleyNoise::new(42);
+        for i in 0..20 {
+            let x = i as f64 * 0.37;
+            let y = i as f64 * 0.53;
+            let val = noise.noise2d(x, y);
+            assert!(val >= 0.0, "Negative value {} at ({}, {})", val, x, y);
         }
     }
 
     #[test]
-    fn test_worley_2d_f1_small() {
-        let n = WorleyNoise::new(42);
-        let (f1, _) = n.noise2d(1.5, 2.5);
-        assert!(f1 < 2.0, "F1 unexpectedly large: {f1}");
+    fn test_worley3d_non_negative() {
+        let noise = WorleyNoise::new(42);
+        for i in 0..10 {
+            let x = i as f64 * 0.37;
+            let val = noise.noise3d(x, x, x);
+            assert!(val >= 0.0, "Negative value {}", val);
+        }
     }
 
     #[test]
-    fn test_worley_3d_deterministic() {
-        let n = WorleyNoise::new(42);
-        let (a, b) = n.noise3d(1.5, 2.5, 3.5);
-        let (c, d) = n.noise3d(1.5, 2.5, 3.5);
-        assert!((a - c).abs() < 1e-12);
-        assert!((b - d).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_worley_3d_positive_distances() {
-        let n = WorleyNoise::new(42);
-        let (f1, f2) = n.noise3d(1.5, 2.5, 3.5);
-        assert!(f1 >= 0.0);
-        assert!(f2 >= f1);
-    }
-
-    #[test]
-    fn test_worley_2d_manhattan() {
-        let n = WorleyNoise::new(42).with_metric(DistanceMetric::Manhattan);
-        let (f1, f2) = n.noise2d(1.5, 2.5);
-        assert!(f1 >= 0.0);
-        assert!(f2 >= f1);
-    }
-
-    #[test]
-    fn test_worley_2d_chebyshev() {
-        let n = WorleyNoise::new(42).with_metric(DistanceMetric::Chebyshev);
-        let (f1, f2) = n.noise2d(1.5, 2.5);
-        assert!(f1 >= 0.0);
-        assert!(f2 >= f1);
-    }
-
-    #[test]
-    fn test_worley_2d_different_seeds() {
+    fn test_worley2d_deterministic() {
         let n1 = WorleyNoise::new(42);
-        let n2 = WorleyNoise::new(99);
-        let (f1_a, _) = n1.noise2d(1.5, 2.5);
-        let (f1_b, _) = n2.noise2d(1.5, 2.5);
-        assert!((f1_a - f1_b).abs() > 0.001);
+        let n2 = WorleyNoise::new(42);
+        for i in 0..10 {
+            let x = i as f64 * 0.37;
+            assert!((n1.noise2d(x, x) - n2.noise2d(x, x)).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_worley_f2_ge_f1() {
+        let noise = WorleyNoise::new(42);
+        for i in 0..20 {
+            let x = i as f64 * 0.31;
+            let y = i as f64 * 0.47;
+            let f1 = noise.noise2d_f1(x, y);
+            let f2 = noise.noise2d_f2(x, y);
+            assert!(
+                f2 >= f1 - 1e-10,
+                "F2 ({}) < F1 ({}) at ({}, {})",
+                f2,
+                f1,
+                x,
+                y
+            );
+        }
+    }
+
+    #[test]
+    fn test_manhattan_distance() {
+        let noise = WorleyNoise::new(42).with_distance_func(DistanceFunc::Manhattan);
+        for i in 0..10 {
+            let val = noise.noise2d(i as f64 * 0.5, i as f64 * 0.5);
+            assert!(val >= 0.0);
+        }
+    }
+
+    #[test]
+    fn test_chebyshev_distance() {
+        let noise = WorleyNoise::new(42).with_distance_func(DistanceFunc::Chebyshev);
+        for i in 0..10 {
+            let val = noise.noise2d(i as f64 * 0.5, i as f64 * 0.5);
+            assert!(val >= 0.0);
+        }
+    }
+
+    #[test]
+    fn test_multi_point_per_cell() {
+        let noise = WorleyNoise::new(42).with_points_per_cell(3);
+        let val = noise.noise2d(0.5, 0.5);
+        assert!(val >= 0.0);
+    }
+
+    #[test]
+    fn test_worley2d_continuity() {
+        let noise = WorleyNoise::new(42);
+        let base = noise.noise2d(1.0, 1.0);
+        let epsilon = 0.001;
+        let nearby = noise.noise2d(1.0 + epsilon, 1.0 + epsilon);
+        assert!(
+            (base - nearby).abs() < 0.1,
+            "Continuity violated: {} vs {}",
+            base,
+            nearby
+        );
+    }
+
+    #[test]
+    fn test_different_seeds_different_output() {
+        let n1 = WorleyNoise::new(1);
+        let n2 = WorleyNoise::new(2);
+        let mut any_different = false;
+        for i in 0..10 {
+            let x = i as f64 * 0.7;
+            if (n1.noise2d(x, x) - n2.noise2d(x, x)).abs() > 0.01 {
+                any_different = true;
+                break;
+            }
+        }
+        assert!(any_different);
     }
 }
