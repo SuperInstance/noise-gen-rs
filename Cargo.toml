@@ -1,0 +1,11 @@
+[package]
+name = "noise-gen-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["SuperInstance"]
+description = "Noise generation: Perlin, Simplex, Worley/Voronoi, and fractal Brownian motion in pure Rust"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/SuperInstance/noise-gen-rs"
+keywords = ["noise", "perlin", "simplex", "voronoi", "fbm"]
+categories = ["algorithms", "mathematics", "graphics"]
+readme = "README.md"
